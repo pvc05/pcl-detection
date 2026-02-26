@@ -70,7 +70,7 @@ def clear_caches(model_name: Optional[str] = None):
 
 
 class PCLModel(nn.Module):
-    def __init__(self, encoder_name, n_labels, aux_dim, dropout=0.1, device: str = None):
+    def __init__(self, encoder_name, n_labels, aux_dim, dropout=0.1, device: str = None, alpha: float = 0.25, gamma: float = 2.0):
         super().__init__()
         self.encoder = get_encoder(encoder_name, device=device)
         hidden = self.encoder.config.hidden_size
@@ -94,7 +94,7 @@ class PCLModel(nn.Module):
         self.bin_head = nn.Linear(fused_dim, 1)
         self.multi_head = nn.Linear(fused_dim, n_labels)
         self.bin_loss_fn = nn.BCEWithLogitsLoss()  # keep BCE for binary (it's balanced enough)
-        self.multi_loss_fn = FocalLoss(alpha=0.25, gamma=2.0)  # focal for sparse multilabel
+        self.multi_loss_fn = FocalLoss(alpha=alpha, gamma=gamma)  # focal for sparse multilabel
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, aux_features=None):
         out = self.encoder(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
