@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
+from transformers import DataCollatorWithPadding
+import torch
 
 
 class DatasetManager(Dataset):
@@ -100,3 +102,38 @@ class DatasetManager(Dataset):
         print(f"Total samples: {len(self)}")
         print(f"Binary distribution: {np.bincount(self.bin)}")
         print(f"Multilabel distribution: {np.sum(self.mult, axis=0)}")
+
+
+class SpanDS(Dataset):
+    """Fully pre-computed dataset — zero per-item conversion overhead.
+    Pre-converts everything to tensors for faster collation."""
+    def __init__(self, texts, binary_labels, cat_labels, tokenizer, max_len):
+        enc = tokenizer(texts, truncation=True, max_length=max_len)
+        self.input_ids = enc["input_ids"]
+        self.attention_mask = enc["attention_mask"]
+        self.token_type_ids = enc.get("token_type_ids")
+        self.binary_labels = torch.tensor(binary_labels, dtype=torch.long)
+        self.cat_labels = torch.tensor(cat_labels, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.binary_labels)
+
+    def __getitem__(self, idx):
+        item = {
+            "input_ids": self.input_ids[idx],
+            "attention_mask": self.attention_mask[idx],
+            "labels": self.binary_labels[idx],
+            "cat_labels": self.cat_labels[idx],
+        }
+        if self.token_type_ids is not None:
+            item["token_type_ids"] = self.token_type_ids[idx]
+        return item
+
+
+class SpanTaskCollator(DataCollatorWithPadding):
+    """Extends DataCollatorWithPadding to also collate cat_labels."""
+    def __call__(self, features):
+        cat_labels = [f.pop("cat_labels") for f in features]
+        batch = super().__call__(features)
+        batch["cat_labels"] = torch.stack(cat_labels)
+        return batch
