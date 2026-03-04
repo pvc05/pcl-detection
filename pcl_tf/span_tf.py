@@ -61,35 +61,40 @@ class SpanModel(nn.Module):
 
 class MultiTaskTrainer(Trainer):
     """Joint training: focal CE on binary + BCE on categories.
-    Uses WeightedRandomSampler to balance the ~10:1 class imbalance."""
+    Class imbalance handled via per-class focal alpha (no separate class weights)."""
 
     def __init__(self, focal_alpha, focal_gamma, aux_weight,
-                 weighted_sampler=None, class_weights=None, **kwargs):
+                 weighted_sampler=None, **kwargs):
         super().__init__(**kwargs)
-        # Store focal params directly — inline CE avoids one_hot + sigmoid + BCE overhead
-        self.focal_alpha = focal_alpha
+        self.focal_alpha = focal_alpha   # weight for positive class; negatives get (1 - alpha)
         self.focal_gamma = focal_gamma
         self.cat_loss_fn = nn.BCEWithLogitsLoss()
         self.aux_weight = aux_weight
         self.weighted_sampler = weighted_sampler
-        # Per-class weights for cross-entropy (handles imbalance in loss, not data)
-        self.class_weights = class_weights  # torch.Tensor of shape (num_classes,) or None
 
     def _focal_ce(self, logits, labels):
-        """Focal cross-entropy with optional per-class weights.
+        """Standard focal loss (Lin et al., 2017) with per-class alpha.
 
-        Key: pt (model confidence) must be computed from RAW logits, not from
-        weighted CE. Otherwise class_weights corrupt the focal modulation and
-        inflate the training loss to nonsensical values (6+ at epoch 1)."""
-        # pt = P(correct class) — from unweighted softmax
+        focal_alpha is the weight for the POSITIVE class (label=1);
+        negatives get (1 - focal_alpha).  This handles class imbalance
+        without a separate class_weights mechanism.
+
+        Loss = -alpha_t * (1 - pt)^gamma * log(pt)
+        """
+        # pt = P(correct class)
         pt = torch.softmax(logits, dim=-1).gather(1, labels.unsqueeze(1)).squeeze(1)
 
-        # Standard CE with optional per-class weights
-        w = self.class_weights.to(logits.device) if self.class_weights is not None else None
-        ce = F.cross_entropy(logits, labels, weight=w, reduction="none")  # (B,)
+        # Unweighted CE per sample
+        ce = F.cross_entropy(logits, labels, reduction="none")  # (B,)
 
-        # Focal modulation based on true confidence
-        focal_weight = self.focal_alpha * (1 - pt.detach()) ** self.focal_gamma
+        # Per-class alpha: alpha for positive, (1 - alpha) for negative
+        alpha_t = torch.where(
+            labels == 1,
+            torch.tensor(self.focal_alpha, device=logits.device),
+            torch.tensor(1.0 - self.focal_alpha, device=logits.device),
+        )
+
+        focal_weight = alpha_t * (1 - pt.detach()) ** self.focal_gamma
         return (focal_weight * ce).mean()
 
     def get_train_dataloader(self):
